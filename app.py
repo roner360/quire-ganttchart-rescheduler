@@ -254,54 +254,74 @@ def project_push_backward(tasks_map: dict) -> list:
 # ==========================================
 # 4. FRONTEND STREAMLIT
 # ==========================================
+
+
+# ==========================================
+# 4. FRONTEND STREAMLIT ("One-Click" Live)
+# ==========================================
 st.title("📊 Quire Gantt Scheduler")
 st.markdown("Forza lo slittamento dei task in base alle dipendenze per non sovrapporli.")
 
 st.write("---")
+# Progetto di default (il tuo ID corto o OID)
+DEFAULT_PROJECT = "0PfverYTSAVEXRuTLyDdnLuI" 
+
 col1, col2 = st.columns(2)
 with col1:
-    input_oid = st.text_input("Inserisci Project OID (Opzionale)", placeholder="es. 0PfverYTSAVEXRu...")
+    input_oid = st.text_input("Inserisci Project OID", placeholder="Lascia vuoto per usare il default")
 with col2:
-    input_id = st.text_input("Oppure inserisci Project ID", placeholder="es. DB_MLO4")
+    input_id = st.text_input("Oppure Project ID (es. DB_MLO4)", placeholder="Lascia vuoto per usare il default")
 
-target_project = input_oid if input_oid else input_id
+# Se l'utente compila qualcosa lo usiamo, altrimenti usiamo il default
+target_project = input_oid if input_oid else (input_id if input_id else DEFAULT_PROJECT)
 
-if st.button("Carica Dati Progetto"):
-    if not target_project:
-        st.warning("Inserisci un OID o un ID progetto.")
-    else:
-        with st.spinner("Risoluzione ID e download task in corso..."):
-            slug = get_quire_project_slug(target_project)
-            # Fetch usando lo slug per maggiore affidabilità
-            tasks = quire_api_request("GET", f"https://quire.io/api/task/search/id/{slug}", params={"scheduled": "true", "limit": "no"})
-            st.session_state['tasks_map'] = {str(t['id']): t for t in tasks}
-            st.success(f"Caricati {len(tasks)} task schedulati con successo!")
-
+st.write(f"**Progetto target attuale:** `{target_project}`")
 st.write("---")
 
 col3, col4 = st.columns(2)
-with col3:
-    if st.button("⏩ Push Gantt FORWARD", type="primary"):
-        if 'tasks_map' not in st.session_state:
-            st.error("Carica prima i dati del progetto!")
-        else:
-            with st.spinner("Calcolo e applicazione Push Forward in corso..."):
-                modificati = project_push_forward(st.session_state['tasks_map'])
-                for task in modificati:
-                    _gantt_apply_update(task['oid'], task, direction="forward")
-                st.success(f"Push Forward completato! {len(modificati)} task aggiornati su Quire.")
-                if modificati:
-                    st.json([{"Task": t['name'], "Nuovo Start": t.get('start'), "Nuova Scadenza": t.get('due')} for t in modificati])
 
+# --- BOTTONE FORWARD ---
+with col3:
+    if st.button("⏩ Push Gantt FORWARD", type="primary", use_container_width=True):
+        with st.spinner("1/3 Sincronizzazione task live da Quire..."):
+            try:
+                slug = get_quire_project_slug(target_project)
+                tasks = quire_api_request("GET", f"https://quire.io/api/task/search/id/{slug}", params={"scheduled": "true", "limit": "no"})
+                tasks_map = {str(t['id']): t for t in tasks}
+            except Exception as e:
+                st.error(f"Errore nel fetch dei task: {e}")
+                st.stop()
+                
+        with st.spinner("2/3 Calcolo conflitti in corso..."):
+            modificati = project_push_forward(tasks_map)
+            
+        with st.spinner(f"3/3 Applicazione di {len(modificati)} aggiornamenti..."):
+            for task in modificati:
+                _gantt_apply_update(task['oid'], task, direction="forward")
+                
+        st.success(f"✅ Push Forward completato! {len(modificati)} task slittati in avanti.")
+        if modificati:
+            st.json([{"Task": t['name'], "Nuovo Start": t.get('start'), "Nuova Scadenza": t.get('due')} for t in modificati])
+
+# --- BOTTONE BACKWARD ---
 with col4:
-    if st.button("⏪ Push Gantt BACKWARD", type="primary"):
-        if 'tasks_map' not in st.session_state:
-            st.error("Carica prima i dati del progetto!")
-        else:
-            with st.spinner("Calcolo e applicazione Push Backward in corso..."):
-                modificati = project_push_backward(st.session_state['tasks_map'])
-                for task in modificati:
-                    _gantt_apply_update(task['oid'], task, direction="backward")
-                st.success(f"Push Backward completato! {len(modificati)} task aggiornati su Quire.")
-                if modificati:
-                    st.json([{"Task": t['name'], "Nuovo Start": t.get('start'), "Nuova Scadenza": t.get('due')} for t in modificati])
+    if st.button("⏪ Push Gantt BACKWARD", type="primary", use_container_width=True):
+        with st.spinner("1/3 Sincronizzazione task live da Quire..."):
+            try:
+                slug = get_quire_project_slug(target_project)
+                tasks = quire_api_request("GET", f"https://quire.io/api/task/search/id/{slug}", params={"scheduled": "true", "limit": "no"})
+                tasks_map = {str(t['id']): t for t in tasks}
+            except Exception as e:
+                st.error(f"Errore nel fetch dei task: {e}")
+                st.stop()
+
+        with st.spinner("2/3 Calcolo conflitti in corso..."):
+            modificati = project_push_backward(tasks_map)
+            
+        with st.spinner(f"3/3 Applicazione di {len(modificati)} aggiornamenti..."):
+            for task in modificati:
+                _gantt_apply_update(task['oid'], task, direction="backward")
+                
+        st.success(f"✅ Push Backward completato! {len(modificati)} task slittati all'indietro.")
+        if modificati:
+            st.json([{"Task": t['name'], "Nuovo Start": t.get('start'), "Nuova Scadenza": t.get('due')} for t in modificati])
