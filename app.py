@@ -333,44 +333,47 @@ with col4:
 
 
 # ==========================================
-# 5. CREAZIONE CATENA DI DIPENDENZE (Versione Filtrata)
+# ==========================================
+# 5. CREAZIONE CATENA DI DIPENDENZE (Ricerca per OID)
 # ==========================================
 st.write("---")
 st.header("🔗 Crea Catena di Dipendenze")
-st.markdown("Assegna lo stato `to_be_linked` ai task in Quire. Poi usa questo tool per collegarli in serie. A operazione completata torneranno 'Da fare'.")
+st.markdown("Assegna lo stato `to_be_linked` ai task in Quire. Poi usa questo tool per collegarli in serie.")
 
 if "chain_df" not in st.session_state:
     st.session_state.chain_df = None
 if "chain_tasks_map" not in st.session_state:
     st.session_state.chain_tasks_map = {}
 
-# Sostituisci questo valore con il nome esatto dello stato "normale" a cui devono tornare 
-# i task dopo essere stati incatenati (o usa il valore numerico, di default 0 è 'Da fare')
 TARGET_STATUS_NAME = "to_be_linked"
-RESET_STATUS_VALUE = 0  # Valore di default per rimetterli "in coda/da fare"
 
 if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
     with st.spinner("Cerco i task con stato 'to_be_linked'..."):
         try:
-            slug = get_quire_project_slug(target_project)
+            # 1. Ricaviamo l'OID effettivo del progetto (funziona sia se l'input è ID corto o OID)
+            proj_data = quire_api_request("GET", f"https://quire.io/api/project/{target_project}")
+            project_oid = proj_data.get("oid")
             
-            # 1. Chiamiamo l'API chiedendo SOLO i task attivi, aumentando il timeout
+            if not project_oid:
+                st.error("Progetto non trovato. Controlla l'ID.")
+                st.stop()
+
+            # 2. Usiamo il nuovo endpoint /task/search/{projectOid}
+            url = f"https://quire.io/api/task/search/{project_oid}"
             tasks = quire_api_request(
                 "GET", 
-                f"https://quire.io/api/task/search/id/{slug}", 
+                url, 
                 params={"status": "active", "limit": "no"},
-                timeout=25 # Aumentato per evitare il read timeout
+                timeout=25
             )
             
             chain_tasks = []
             st.session_state.chain_tasks_map = {}
             
-            # 2. Filtriamo quelli che hanno il nostro stato personalizzato
             for t in tasks:
                 status_obj = t.get('status', {})
                 status_name = status_obj.get('name', '').lower()
                 
-                # Se il nome dello stato coincide (case-insensitive)
                 if status_name == TARGET_STATUS_NAME.lower():
                     chain_tasks.append(t)
                     st.session_state.chain_tasks_map[t['oid']] = t
@@ -402,7 +405,14 @@ if st.session_state.chain_df is not None:
         use_container_width=True
     )
     
-    if st.button("🔗 3. Applica Catena e Ripristina Stato", type="primary", use_container_width=True):
+    # Selettore manuale dello stato di ritorno
+    st.write("---")
+    reset_status_value = st.number_input(
+        "3. Valore numerico dello Stato a cui far tornare i task (0 = Da fare):", 
+        value=0, step=1
+    )
+    
+    if st.button("🔗 4. Applica Catena e Ripristina Stato", type="primary", use_container_width=True):
         with st.spinner("Creazione dipendenze in corso..."):
             sorted_df = edited_df.sort_values("Ordine").reset_index(drop=True)
             ordered_oids = sorted_df["OID"].tolist()
@@ -414,10 +424,9 @@ if st.session_state.chain_df is not None:
                 current_oid = ordered_oids[i]
                 current_task = st.session_state.chain_tasks_map[current_oid]
                 
-                # --- RIPRISTINO STATO ---
-                payload = {"status": RESET_STATUS_VALUE}
+                # Applichiamo lo stato scelto dall'utente
+                payload = {"status": reset_status_value}
                 
-                # --- GESTIONE SUCCESSORI ---
                 if i < len(ordered_oids) - 1:
                     next_id = ordered_ids[i+1]
                     existing_succs = extract_relation_ids(current_task.get('successors'))
@@ -431,6 +440,5 @@ if st.session_state.chain_df is not None:
                     st.error(f"Errore nell'aggiornamento del task {ordered_ids[i]}: {e}")
             
             if success_count == len(ordered_oids):
-                st.success(f"✅ Catena creata perfettamente! I task sono stati rimescolati e rimessi in coda.")
+                st.success(f"✅ Catena creata perfettamente! I task sono tornati allo stato {reset_status_value}.")
                 st.session_state.chain_df = None
-
