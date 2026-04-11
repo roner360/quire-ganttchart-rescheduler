@@ -329,45 +329,58 @@ with col4:
         if modificati:
             st.json([{"Task": t['name'], "Nuovo Start": t.get('start'), "Nuova Scadenza": t.get('due')} for t in modificati])
 
+
+
+
 # ==========================================
-# 5. CREAZIONE CATENA DI DIPENDENZE
+# 5. CREAZIONE CATENA DI DIPENDENZE (Versione Filtrata)
 # ==========================================
 st.write("---")
 st.header("🔗 Crea Catena di Dipendenze")
-st.markdown("Aggiungi l'etichetta `crea_catena_di_dipendenza` ai task in Quire. Poi usa questo tool per collegarli in serie e pulire l'etichetta.")
+st.markdown("Assegna lo stato `to_be_linked` ai task in Quire. Poi usa questo tool per collegarli in serie. A operazione completata torneranno 'Da fare'.")
 
-# Inizializziamo le variabili in session_state per non perderle al refresh della pagina
 if "chain_df" not in st.session_state:
     st.session_state.chain_df = None
 if "chain_tasks_map" not in st.session_state:
     st.session_state.chain_tasks_map = {}
 
-TARGET_TAG = "crea_catena_di_dipendenza"
+# Sostituisci questo valore con il nome esatto dello stato "normale" a cui devono tornare 
+# i task dopo essere stati incatenati (o usa il valore numerico, di default 0 è 'Da fare')
+TARGET_STATUS_NAME = "to_be_linked"
+RESET_STATUS_VALUE = 0  # Valore di default per rimetterli "in coda/da fare"
 
 if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
-    with st.spinner("Cerco i task con l'etichetta..."):
+    with st.spinner("Cerco i task con stato 'to_be_linked'..."):
         try:
             slug = get_quire_project_slug(target_project)
-            tasks = quire_api_request("GET", f"https://quire.io/api/task/search/id/{slug}", params={"limit": "no"})
+            
+            # 1. Chiamiamo l'API chiedendo SOLO i task attivi, aumentando il timeout
+            tasks = quire_api_request(
+                "GET", 
+                f"https://quire.io/api/task/search/id/{slug}", 
+                params={"status": "active", "limit": "no"},
+                timeout=25 # Aumentato per evitare il read timeout
+            )
             
             chain_tasks = []
             st.session_state.chain_tasks_map = {}
             
-            # Filtriamo i task che possiedono il tag (ignorando maiuscole/minuscole)
+            # 2. Filtriamo quelli che hanno il nostro stato personalizzato
             for t in tasks:
-                tags = [tag.lower() for tag in t.get('tags', [])]
-                if TARGET_TAG.lower() in tags:
+                status_obj = t.get('status', {})
+                status_name = status_obj.get('name', '').lower()
+                
+                # Se il nome dello stato coincide (case-insensitive)
+                if status_name == TARGET_STATUS_NAME.lower():
                     chain_tasks.append(t)
                     st.session_state.chain_tasks_map[t['oid']] = t
             
             if not chain_tasks:
-                st.warning(f"Nessun task trovato con l'etichetta '{TARGET_TAG}'.")
+                st.warning(f"Nessun task trovato con stato '{TARGET_STATUS_NAME}'.")
                 st.session_state.chain_df = None
             else:
-                # Ordiniamo di default per ID crescente (come richiesto)
                 chain_tasks.sort(key=lambda x: int(x['id']))
                 
-                # Creiamo il DataFrame per l'editor interattivo
                 df = pd.DataFrame({
                     "Ordine": range(1, len(chain_tasks) + 1),
                     "ID": [t['id'] for t in chain_tasks],
@@ -379,11 +392,9 @@ if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
         except Exception as e:
             st.error(f"Errore durante la ricerca: {e}")
 
-# Se abbiamo trovato dei task, mostriamo l'editor e il bottone per applicare
 if st.session_state.chain_df is not None:
     st.write("**2. Modifica i numeri nella colonna 'Ordine' se vuoi cambiare la sequenza:**")
     
-    # Mostriamo la tabella modificabile (blocchiamo tutto tranne la colonna 'Ordine')
     edited_df = st.data_editor(
         st.session_state.chain_df, 
         disabled=["ID", "Nome", "OID"],
@@ -391,40 +402,28 @@ if st.session_state.chain_df is not None:
         use_container_width=True
     )
     
-    if st.button("🔗 3. Applica Catena e Pulisci Etichette", type="primary", use_container_width=True):
+    if st.button("🔗 3. Applica Catena e Ripristina Stato", type="primary", use_container_width=True):
         with st.spinner("Creazione dipendenze in corso..."):
-            # 1. Riordiniamo il DataFrame in base ai numeri scelti dall'utente
             sorted_df = edited_df.sort_values("Ordine").reset_index(drop=True)
             ordered_oids = sorted_df["OID"].tolist()
             ordered_ids = sorted_df["ID"].tolist()
             
             success_count = 0
             
-            # 2. Iteriamo sulla catena per applicare le modifiche
             for i in range(len(ordered_oids)):
                 current_oid = ordered_oids[i]
                 current_task = st.session_state.chain_tasks_map[current_oid]
                 
-                # --- GESTIONE RIMOZIONE TAG ---
-                # Sovrascriviamo l'array dei tags escludendo quello target
-                existing_tags = current_task.get('tags', [])
-                updated_tags = [tag for tag in existing_tags if tag.lower() != TARGET_TAG.lower()]
-                
-                payload = {"tags": updated_tags}
+                # --- RIPRISTINO STATO ---
+                payload = {"status": RESET_STATUS_VALUE}
                 
                 # --- GESTIONE SUCCESSORI ---
-                # Se non è l'ultimo task della catena, lo agganciamo al successivo
                 if i < len(ordered_oids) - 1:
                     next_id = ordered_ids[i+1]
-                    
-                    # Recuperiamo i successori esistenti per non piallarli
                     existing_succs = extract_relation_ids(current_task.get('successors'))
-                    
-                    # Aggiungiamo il nuovo ID (usando un set per evitare doppioni)
                     new_succs = list(set(existing_succs + [str(next_id)]))
                     payload["successors"] = new_succs
                 
-                # Invio chiamata API per questo specifico task
                 try:
                     quire_api_request("PUT", f"https://quire.io/api/task/{current_oid}", json_data=payload)
                     success_count += 1
@@ -432,5 +431,6 @@ if st.session_state.chain_df is not None:
                     st.error(f"Errore nell'aggiornamento del task {ordered_ids[i]}: {e}")
             
             if success_count == len(ordered_oids):
-                st.success(f"✅ Catena creata perfettamente tra {success_count} task! Le etichette sono state rimosse.")
-                st.session_state.chain_df = None # Nascondiamo la tabella a fine operazione
+                st.success(f"✅ Catena creata perfettamente! I task sono stati rimescolati e rimessi in coda.")
+                st.session_state.chain_df = None
+
