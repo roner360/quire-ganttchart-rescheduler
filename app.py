@@ -197,7 +197,7 @@ def project_push_forward(tasks_map: dict) -> list:
             has_start  = bool(succ_task.get('start'))
             succ_start = parse_quire_date(succ_task['start']) if has_start else succ_due
 
-            if succ_start <= current_due:
+            if succ_start < current_due:
                 shift_delta = (current_due + timedelta(days=1)) - succ_start
                 new_start = succ_start + shift_delta
                 new_due   = succ_due + shift_delta
@@ -237,7 +237,8 @@ def project_push_backward(tasks_map: dict) -> list:
             has_start  = bool(pred_task.get('start'))
             pred_start = parse_quire_date(pred_task['start']) if has_start else pred_due
 
-            conflict = (pred_due >= current_start) if current_start_explicit else (pred_due > current_start)
+            #conflict = (pred_due >= current_start) if current_start_explicit else (pred_due > current_start)
+            conflict = (pred_due > current_start)
 
             if conflict:
                 shift_delta = pred_due - (current_start - timedelta(days=1))
