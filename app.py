@@ -10,6 +10,16 @@ import pandas as pd
 
 st.set_page_config(page_title="Quire Gantt Scheduler", page_icon="📊")
 
+if "ui_logs" not in st.session_state:
+    st.session_state.ui_logs = []
+
+def add_log(messaggio):
+    """Aggiunge un log sia a schermo che nel terminale"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    riga_log = f"[{timestamp}] {messaggio}"
+    st.session_state.ui_logs.append(riga_log)
+    print(riga_log) # Lo stampa anche nel terminale
+
 # ==========================================
 # 1. CONFIGURAZIONE & AUTH (QUIRE)
 # ==========================================
@@ -333,8 +343,9 @@ with col4:
 
 
 # ==========================================
+
 # ==========================================
-# 5. CREAZIONE CATENA DI DIPENDENZE (Ricerca per OID)
+# 5. CREAZIONE CATENA DI DIPENDENZE (Con Log integrati)
 # ==========================================
 st.write("---")
 st.header("🔗 Crea Catena di Dipendenze")
@@ -348,24 +359,32 @@ if "chain_tasks_map" not in st.session_state:
 TARGET_STATUS_NAME = "to_be_linked"
 
 if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
+    add_log(">>> Avvio ricerca task da incatenare...")
     with st.spinner("Cerco i task con stato 'to_be_linked'..."):
         try:
-            # 1. Ricaviamo l'OID effettivo del progetto (funziona sia se l'input è ID corto o OID)
+            # 1. Ricaviamo l'OID effettivo del progetto
+            add_log(f"Recupero OID per il progetto: {target_project}")
             proj_data = quire_api_request("GET", f"https://quire.io/api/project/{target_project}")
             project_oid = proj_data.get("oid")
             
             if not project_oid:
+                add_log("❌ Progetto non trovato (project_oid è vuoto).")
                 st.error("Progetto non trovato. Controlla l'ID.")
                 st.stop()
 
-            # 2. Usiamo il nuovo endpoint /task/search/{projectOid}
+            add_log(f"✅ OID Progetto trovato: {project_oid}")
+
+            # 2. Usiamo l'endpoint /task/search/{projectOid}
             url = f"https://quire.io/api/task/search/{project_oid}"
+            add_log(f"Richiesta task attivi all'URL: {url}")
+            
             tasks = quire_api_request(
                 "GET", 
                 url, 
                 params={"status": "active", "limit": "no"},
                 timeout=25
             )
+            add_log(f"Scaricati {len(tasks)} task attivi dal progetto.")
             
             chain_tasks = []
             st.session_state.chain_tasks_map = {}
@@ -377,6 +396,8 @@ if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
                 if status_name == TARGET_STATUS_NAME.lower():
                     chain_tasks.append(t)
                     st.session_state.chain_tasks_map[t['oid']] = t
+            
+            add_log(f"Filtrati {len(chain_tasks)} task corrispondenti allo stato '{TARGET_STATUS_NAME}'.")
             
             if not chain_tasks:
                 st.warning(f"Nessun task trovato con stato '{TARGET_STATUS_NAME}'.")
@@ -391,8 +412,10 @@ if st.button("🔍 1. Cerca Task da Incatenare", use_container_width=True):
                     "OID": [t['oid'] for t in chain_tasks]
                 })
                 st.session_state.chain_df = df
+                add_log("Tabella DataFrame generata con successo.")
                 
         except Exception as e:
+            add_log(f"❌ Errore critico durante la ricerca: {e}")
             st.error(f"Errore durante la ricerca: {e}")
 
 if st.session_state.chain_df is not None:
@@ -413,6 +436,7 @@ if st.session_state.chain_df is not None:
     )
     
     if st.button("🔗 4. Applica Catena e Ripristina Stato", type="primary", use_container_width=True):
+        add_log(">>> Avvio applicazione catena di dipendenze...")
         with st.spinner("Creazione dipendenze in corso..."):
             sorted_df = edited_df.sort_values("Ordine").reset_index(drop=True)
             ordered_oids = sorted_df["OID"].tolist()
@@ -423,6 +447,9 @@ if st.session_state.chain_df is not None:
             for i in range(len(ordered_oids)):
                 current_oid = ordered_oids[i]
                 current_task = st.session_state.chain_tasks_map[current_oid]
+                task_name = current_task.get('name', '')
+                
+                add_log(f"[{i+1}/{len(ordered_oids)}] Elaborazione OID: {current_oid} ({task_name})")
                 
                 # Applichiamo lo stato scelto dall'utente
                 payload = {"status": reset_status_value}
@@ -432,13 +459,33 @@ if st.session_state.chain_df is not None:
                     existing_succs = extract_relation_ids(current_task.get('successors'))
                     new_succs = list(set(existing_succs + [str(next_id)]))
                     payload["successors"] = new_succs
+                    add_log(f"   -> Successore calcolato: ID {next_id}")
+                else:
+                    add_log("   -> Ultimo task della catena (nessun successore aggiunto).")
                 
                 try:
+                    add_log(f"   -> Invio PUT payload: {payload}")
                     quire_api_request("PUT", f"https://quire.io/api/task/{current_oid}", json_data=payload)
                     success_count += 1
+                    add_log(f"✅ Successo: Task {ordered_ids[i]} aggiornato.")
                 except Exception as e:
-                    st.error(f"Errore nell'aggiornamento del task {ordered_ids[i]}: {e}")
+                    err_msg = f"❌ Errore nell'aggiornamento del task {ordered_ids[i]}: {e}"
+                    add_log(err_msg)
+                    st.error(err_msg)
             
             if success_count == len(ordered_oids):
+                add_log(f"🎉 Catena completata! {success_count} task elaborati.")
                 st.success(f"✅ Catena creata perfettamente! I task sono tornati allo stato {reset_status_value}.")
                 st.session_state.chain_df = None
+
+# ==========================================
+# ESPANSORE DEI LOG (Da tenere alla fine del file)
+# ==========================================
+st.write("---")
+with st.expander("🛠️ Console di Debug (Visualizza Logs)"):
+    if st.button("🗑️ Pulisci Logs", key="clear_logs"):
+        st.session_state.ui_logs = []
+        st.rerun()
+        
+    for log_line in st.session_state.ui_logs:
+        st.code(log_line, language="bash")
